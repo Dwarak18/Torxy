@@ -30,3 +30,9 @@ docker-compose.override.yml
 
 # Node
 node_modules/
+
+# Copilot/agent skills
+.skill/
+
+# Literal .log file
+.log
