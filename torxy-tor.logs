@@ -1,0 +1,47 @@
+PS C:\Users\Dwarak\Documents\GitHub\ToRxy> docker logs torxy_app -f
+
+[Torxy] Circuit registered: tor1:9051
+
+[Torxy] Circuit registered: tor2:9051
+
+[Torxy] Circuit registered: tor3:9051
+
+[Torxy] 3 circuit(s) active
+
+[Torxy] Proxy listening on http://0.0.0.0:8080
+
+
+
+PS C:\Users\Dwarak\Documents\GitHub\ToRxy> curl -v -x http://localhost:8080 http://httpbin.org/ip
+
+* Host localhost:8080 was resolved.
+
+* IPv6: ::1ocker Desktop   o View Config   w Enable Watch   d Detach
+
+* IPv4: 127.0.0.1
+
+*   Trying [::1]:8080...
+
+* Established connection to localhost (::1 port 8080) from ::1 port 59637 
+
+* using HTTP/1.x
+
+> GET http://httpbin.org/ip HTTP/1.1
+
+> Host: httpbin.org
+
+> User-Agent: curl/8.19.0
+
+> Accept: */*
+
+> Proxy-Connection: Keep-Alive
+
+> 
+
+* Request completely sent off
+
+* Empty reply from server
+
+* shutting down connection #0
+
+curl: (52) Empty reply from server

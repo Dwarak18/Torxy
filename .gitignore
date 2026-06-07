@@ -1,0 +1,32 @@
+# .gitignore for PHP/Composer project
+
+# Composer / PHP
+/vendor/
+/composer.phar
+/.env
+/.env.*.local
+.phpunit.result.cache
+phpunit.xml
+phpunit.xml.dist
+
+# IDEs
+/.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs, caches and temporary files
+*.log
+logs/
+cache/
+tmp/
+build/
+
+# Docker
+docker-compose.override.yml
+
+# Node
+node_modules/

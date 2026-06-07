@@ -1,0 +1,7 @@
+SocksPort 0.0.0.0:9050
+ControlPort 0.0.0.0:9051
+HashedControlPassword HASHED_PASSWORD_PLACEHOLDER
+DataDirectory /var/lib/tor
+Log notice stdout
+NewCircuitPeriod 30
+MaxCircuitDirtiness 60

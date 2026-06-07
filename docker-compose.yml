@@ -1,0 +1,57 @@
+services:
+  torxy-app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: torxy_app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/var/www/torxy
+      - torxy_vendor:/var/www/torxy/vendor   # preserve vendor from container
+    depends_on:
+      - tor1
+      - tor2
+      - tor3
+    networks:
+      - torxy_net
+    env_file:
+      - .env
+
+  tor1:
+    build:
+      context: docker/tor
+    container_name: torxy_tor1
+    restart: unless-stopped
+    networks:
+      - torxy_net
+    env_file:
+      - .env
+
+  tor2:
+    build:
+      context: docker/tor
+    container_name: torxy_tor2
+    restart: unless-stopped
+    networks:
+      - torxy_net
+    env_file:
+      - .env
+
+  tor3:
+    build:
+      context: docker/tor
+    container_name: torxy_tor3
+    restart: unless-stopped
+    networks:
+      - torxy_net
+    env_file:
+      - .env
+
+networks:
+  torxy_net:
+    driver: bridge
+
+volumes:
+  torxy_vendor:   # named volume keeps vendor/ intact across mounts
