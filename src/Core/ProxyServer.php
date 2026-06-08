@@ -36,7 +36,7 @@ class ProxyServer
         echo "[Torxy] Proxy listening on http://{$this->host}:{$this->port}" . PHP_EOL;
     }
 
-    private function handleRequest(ServerRequestInterface $request): Response
+    private function handleRequest(ServerRequestInterface $request): Response|\React\Promise\PromiseInterface
     {
         $method = $request->getMethod();
         $target = $request->getRequestTarget();
@@ -58,28 +58,61 @@ class ProxyServer
         }
 
         try {
-            $circuit      = $this->circuitManager->getNextNode();
             $cleanHeaders = $this->headerSanitizer->strip(
                 $this->flattenHeaders($request->getHeaders())
             );
 
-            echo sprintf(
-                "[Torxy] Forwarding → %s via %s\n",
-                $targetUrl,
-                $circuit->getIdentifier()
-            );
+            $maxAttempts = 3;
 
-            $result = $this->requestForwarder->forward(
-                circuit: $circuit,
-                url:     $targetUrl,
-                method:  $method,
-                headers: $cleanHeaders,
-                body:    (string) $request->getBody()
-            );
+            $attemptForward = function ($circuit, int $remaining) use ($method, $targetUrl, $cleanHeaders, $request, &$attemptForward) {
+                echo sprintf("[Torxy] Forwarding → %s via %s (attempts left: %d)\n", $targetUrl, $circuit->getIdentifier(), $remaining);
 
-            echo "[Torxy] Response: HTTP {$result['status']}\n";
+                return $this->requestForwarder->forward(
+                    circuit: $circuit,
+                    url:     $targetUrl,
+                    method:  $method,
+                    headers: $cleanHeaders,
+                    body:    (string) $request->getBody()
+                )->then(
+                    function (\Psr\Http\Message\ResponseInterface $response) {
+                        echo "[Torxy] Response: HTTP {$response->getStatusCode()}\n";
 
-            return new Response($result['status'], [], $result['body']);
+                        $forwardHeaders = [];
+                        foreach ($response->getHeaders() as $name => $values) {
+                            $forwardHeaders[$name] = implode(', ', $values);
+                        }
+
+                        $body = (string) $response->getBody();
+
+                        return new Response($response->getStatusCode(), $forwardHeaders, $body);
+                    },
+                    function (\Throwable $e) use ($remaining, &$attemptForward) {
+                        $msg = $e->getMessage();
+                        echo "[Torxy] ERROR on forward: {$msg}\n";
+
+                        // Determine if error is retryable (TLS/handshake/connection reset)
+                        $lower = strtolower($msg);
+                        $isRetryable = str_contains($lower, 'tls') || str_contains($lower, 'handshake') || str_contains($lower, 'connection reset') || str_contains($lower, 'econnreset') || str_contains($lower, 'connection lost');
+
+                        if ($isRetryable && $remaining > 1) {
+                            $next = $this->circuitManager->getNextNode();
+                            echo sprintf("[Torxy] Retrying via %s (%d attempts left)\n", $next->getIdentifier(), $remaining - 1);
+                            return $attemptForward($next, $remaining - 1);
+                        }
+
+                        // Map timeout-like errors to 504 Gateway Timeout
+                        if (str_contains($lower, 'timeout') || str_contains($lower, 'timed out')) {
+                            return $this->errorResponse(504, 'Gateway Timeout');
+                        }
+
+                        return $this->errorResponse(502, 'Bad Gateway');
+                    }
+                );
+            };
+
+            // Start attempts using initial circuit from manager
+            $first = $this->circuitManager->getNextNode();
+            return $attemptForward($first, $maxAttempts);
 
         } catch (Throwable $e) {
             echo "[Torxy] ERROR: {$e->getMessage()}\n";

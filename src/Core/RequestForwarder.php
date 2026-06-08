@@ -6,15 +6,16 @@ namespace Torxy\Core;
 
 use Torxy\Tor\CircuitNode;
 use Torxy\Tor\SocksClient;
+use React\Promise\PromiseInterface;
 
 class RequestForwarder
 {
-    private const REQUEST_TIMEOUT = 30;
+    private const REQUEST_TIMEOUT = 30.0;
 
     /**
      * Forward an HTTP request through the given Tor circuit's SOCKS5 proxy.
      *
-     * @return array{status: int, headers: string, body: string}
+     * @return PromiseInterface<\Psr\Http\Message\ResponseInterface>
      */
     public function forward(
         CircuitNode $circuit,
@@ -22,7 +23,7 @@ class RequestForwarder
         string $method,
         array $headers,
         string $body = ''
-    ): array {
+    ): PromiseInterface {
         $client = new SocksClient(
             socksHost: $circuit->socksHost,
             socksPort: $circuit->socksPort,

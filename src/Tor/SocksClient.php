@@ -5,69 +5,57 @@ declare(strict_types=1);
 namespace Torxy\Tor;
 
 use RuntimeException;
+use React\Promise\PromiseInterface;
+use React\Http\Browser;
+use React\Socket\Connector;
+use Clue\React\Socks\Client as ClueSocksClient;
 
 class SocksClient
 {
-    private const DEFAULT_TIMEOUT = 30;
+    private const DEFAULT_TIMEOUT = 30.0;
+    private Browser $browser;
 
     public function __construct(
-        private readonly string $socksHost,
-        private readonly int $socksPort,
-        private readonly int $timeout = self::DEFAULT_TIMEOUT
-    ) {}
+        string $socksHost,
+        int $socksPort,
+        float $timeout = self::DEFAULT_TIMEOUT
+    ) {
+        // Configure SOCKS proxy connector
+        $proxy = new ClueSocksClient("socks5://{$socksHost}:{$socksPort}");
+        
+        $connector = new Connector([
+            'tcp' => $proxy,
+            'timeout' => $timeout,
+            'dns' => false // Force hostname resolution inside Tor (SOCKS5H behavior)
+        ]);
+
+        // Create an async HTTP browser using the SOCKS connector
+        $this->browser = (new Browser($connector))
+            ->withTimeout($timeout)
+            ->withFollowRedirects(false); // We want the client to receive the standard redirect
+    }
 
     /**
-     * Forward an HTTP request through the Tor SOCKS5 proxy.
+     * Forward an HTTP request through the Tor SOCKS5 proxy asynchronously.
      * SOCKS5H resolves DNS inside Tor — prevents DNS leaks.
      *
-     * @return array{status: int, headers: string, body: string}
+     * @return PromiseInterface<\Psr\Http\Message\ResponseInterface>
      */
     public function forward(
         string $url,
         string $method,
         array $headers,
         string $body = ''
-    ): array {
+    ): PromiseInterface {
         $this->validateUrl($url);
         $this->validateMethod($method);
 
-        $ch = curl_init();
-
-        curl_setopt_array($ch, [
-            CURLOPT_URL            => $url,
-            // SOCKS5H = hostname resolution happens inside Tor (no DNS leak)
-            CURLOPT_PROXY          => "socks5h://{$this->socksHost}:{$this->socksPort}",
-            CURLOPT_PROXYTYPE      => CURLPROXY_SOCKS5_HOSTNAME,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HEADER         => true,
-            CURLOPT_TIMEOUT        => $this->timeout,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_HTTPHEADER     => $this->formatHeaders($headers),
-            CURLOPT_CUSTOMREQUEST  => $method,
-        ]);
-
-        if ($body !== '') {
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-        }
-
-        $response   = curl_exec($ch);
-        $curlError  = curl_error($ch);
-        $statusCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-
-        curl_close($ch);
-
-        if ($response === false) {
-            throw new RuntimeException("SOCKS5 forwarding failed: {$curlError}");
-        }
-
-        return [
-            'status'  => $statusCode,
-            'headers' => substr($response, 0, $headerSize),
-            'body'    => substr($response, $headerSize),
-        ];
+        return $this->browser->request(
+            $method,
+            $url,
+            $headers, // react/http standardizes headers array
+            $body
+        );
     }
 
     private function validateUrl(string $url): void
@@ -84,14 +72,5 @@ class SocksClient
         if (!in_array(strtoupper($method), $allowed, strict: true)) {
             throw new RuntimeException("Unsupported HTTP method: {$method}");
         }
-    }
-
-    private function formatHeaders(array $headers): array
-    {
-        $formatted = [];
-        foreach ($headers as $key => $value) {
-            $formatted[] = "{$key}: {$value}";
-        }
-        return $formatted;
     }
 }
