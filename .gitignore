@@ -34,5 +34,8 @@ node_modules/
 # Copilot/agent skills
 .skill/
 
+# Claude assistant memory/cache
+.claude/
+
 # Literal .log file
 .log
