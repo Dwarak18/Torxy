@@ -165,6 +165,86 @@ for WANT in 404 503; do
 done
 echo "Upstream status relaying OK"
 
+# Bodies are streamed rather than buffered. Every case below fails on a buffering proxy, so
+# each is a regression test for a specific defect rather than a general size check.
+UPLOAD_ECHO="${TORXY_UPLOAD_ECHO:-http://httpbin.org/post}"
+LARGE_FILE="${TORXY_LARGE_FILE:-http://speedtest.tele2.net/20MB.zip}"
+LARGE_FILE_BYTES="${TORXY_LARGE_FILE_BYTES:-20971520}"
+
+UPLOAD_TMP=$(mktemp)
+trap 'rm -f "$UPLOAD_TMP"' EXIT
+
+# Ask the echo target how many bytes it actually received. react/http's default buffering
+# caps a request body at 64 KiB and forwards an EMPTY one past that, answering 200 — so a
+# short read here is silent data loss, not a visible error.
+upload_seen_length() {
+  pcurl -sS --max-time 180 -X POST \
+    -H 'Content-Type: application/octet-stream' \
+    --data-binary "@${UPLOAD_TMP}" "$@" "$UPLOAD_ECHO" 2>/dev/null \
+    | grep -o '"Content-Length": "[0-9]*"' | head -1 | grep -o '[0-9]*'
+}
+
+for SIZE in 65537 204800; do
+  echo "Verifying a ${SIZE}-byte upload arrives intact..."
+  head -c "$SIZE" /dev/zero | tr '\0' 'a' > "$UPLOAD_TMP"
+  SEEN=$(upload_seen_length || true)
+
+  [ "$SEEN" = "$SIZE" ] || {
+    echo "FAIL: target received Content-Length ${SEEN:-none}, expected ${SIZE}"; exit 1;
+  }
+done
+echo "Buffered upload round-trip OK"
+
+# Past RequestBodyReader::MAX_REPLAYABLE_BYTES the body is streamed straight through and the
+# request gets a single attempt, so this exercises a different code path from the two above.
+echo "Verifying a 5 MiB upload is streamed through intact..."
+head -c 5242880 /dev/zero | tr '\0' 'a' > "$UPLOAD_TMP"
+SEEN=$(upload_seen_length || true)
+[ "$SEEN" = "5242880" ] || {
+  echo "FAIL: streamed upload arrived as ${SEEN:-none} bytes, expected 5242880"; exit 1;
+}
+echo "Streamed upload OK"
+
+# A chunked upload announces no length at all, so it can never be size-checked up front.
+# The target reports no Content-Length either, so count the bytes it echoed back instead.
+echo "Verifying a chunked upload with no Content-Length arrives intact..."
+head -c 300000 /dev/zero | tr '\0' 'b' > "$UPLOAD_TMP"
+ECHOED=$(pcurl -sS --max-time 180 -X POST \
+  -H 'Transfer-Encoding: chunked' -H 'Content-Type: application/octet-stream' \
+  --data-binary "@${UPLOAD_TMP}" "$UPLOAD_ECHO" 2>/dev/null | tr -cd 'b' | wc -c | tr -d ' ')
+
+# The JSON envelope contributes a handful of its own 'b' characters, so allow a small margin.
+if [ "${ECHOED:-0}" -lt 300000 ] || [ "${ECHOED:-0}" -gt 300100 ]; then
+  echo "FAIL: chunked upload echoed ${ECHOED:-0} body bytes, expected ~300000"; exit 1;
+fi
+echo "Chunked upload OK"
+
+# Larger than Browser's 16 MiB response buffer. Buffered, this returned 502 and — because a
+# size limit is not a transport fault — took a health strike off every circuit it retried on,
+# so repeating it drained the pool. Both halves are asserted.
+echo "Verifying a ${LARGE_FILE_BYTES}-byte download streams through (this takes a while)..."
+DL=$(pcurl -sS --max-time 600 -o /dev/null -w '%{http_code} %{size_download}' "$LARGE_FILE" || true)
+echo "large download: ${DL:-no response}"
+
+[ "$DL" = "200 ${LARGE_FILE_BYTES}" ] || {
+  echo "FAIL: large download returned '${DL:-nothing}', expected '200 ${LARGE_FILE_BYTES}'"; exit 1;
+}
+
+HEALTH_AFTER=$(curl -sS "${PROXY}/healthz" || true)
+echo "healthz after large transfer: ${HEALTH_AFTER}"
+
+# The pool must be exactly as healthy as it was before the transfer.
+BEFORE_HEALTHY=$(echo "$HEALTH" | grep -o '"healthy"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+AFTER_HEALTHY=$(echo "$HEALTH_AFTER" | grep -o '"healthy"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+
+[ "${AFTER_HEALTHY:-0}" = "${BEFORE_HEALTHY:-1}" ] || {
+  echo "FAIL: healthy circuits went from ${BEFORE_HEALTHY} to ${AFTER_HEALTHY} — a size limit was charged to circuit health"; exit 1;
+}
+echo "Large download OK, circuit health intact"
+
+rm -f "$UPLOAD_TMP"
+trap - EXIT
+
 echo "Verifying malformed CONNECT is rejected..."
 BAD_OK=1
 for BAD_REQ in \

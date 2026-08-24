@@ -7,9 +7,16 @@ namespace Torxy\Core;
 use Torxy\Tor\CircuitNode;
 use Torxy\Tor\SocksClient;
 use React\Promise\PromiseInterface;
+use React\Stream\ReadableStreamInterface;
 
 class RequestForwarder
 {
+    /**
+     * Budget for getting an upstream response *head* back. Browser cancels its timeout once
+     * the head arrives, so with a streaming response this no longer bounds the body
+     * transfer — deliberately, since any fixed budget would kill a legitimate large
+     * download partway through.
+     */
     private const REQUEST_TIMEOUT = 30.0;
 
     /**
@@ -23,7 +30,9 @@ class RequestForwarder
     /**
      * Forward an HTTP request through the given Tor circuit's SOCKS5 proxy.
      *
-     * @param array<string, string> $headers
+     * @param array<string, string>          $headers
+     * @param string|ReadableStreamInterface $body    Streamed straight through when it is too
+     *                                                large to hold; see RequestBodyReader.
      *
      * @return PromiseInterface<\Psr\Http\Message\ResponseInterface>
      */
@@ -32,7 +41,7 @@ class RequestForwarder
         string $url,
         string $method,
         array $headers,
-        string $body = ''
+        string|ReadableStreamInterface $body = ''
     ): PromiseInterface {
         $client = new SocksClient(
             socksHost: $circuit->socksHost,

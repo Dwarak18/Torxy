@@ -37,6 +37,18 @@ class HeaderSanitizer
         'upgrade',
     ];
 
+    /**
+     * Headers the proxy answers itself and must therefore not pass on.
+     *
+     * `Expect: 100-continue` is a negotiation with the *next* hop, and react/http's server
+     * already replies `100 Continue` to the client on our behalf. Forwarding it as well
+     * invites a second `100` from the target, which react/http's client surfaces as the
+     * final response — so the client would receive an empty `100` instead of its answer.
+     */
+    private const LOCALLY_ANSWERED_HEADERS = [
+        'expect',
+    ];
+
     /** @var list<string> */
     private array $strippedHeaders;
 
@@ -48,6 +60,7 @@ class HeaderSanitizer
         $this->strippedHeaders = array_values(array_merge(
             self::IDENTITY_HEADERS,
             self::HOP_BY_HOP_HEADERS,
+            self::LOCALLY_ANSWERED_HEADERS,
             array_map('strtolower', $additionalHeaders)
         ));
     }

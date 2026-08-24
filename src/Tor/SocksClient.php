@@ -9,6 +9,7 @@ use React\Promise\PromiseInterface;
 use React\Http\Browser;
 use React\Socket\Connector;
 use React\Socket\ConnectorInterface;
+use React\Stream\ReadableStreamInterface;
 use Clue\React\Socks\Client as ClueSocksClient;
 
 class SocksClient
@@ -70,7 +71,16 @@ class SocksClient
      * Forward an HTTP request through the Tor SOCKS5 proxy asynchronously.
      * SOCKS5H resolves DNS inside Tor — prevents DNS leaks.
      *
-     * @param array<string, string> $headers
+     * The returned response is *streaming*: it resolves as soon as the response head has
+     * arrived, and its body is a ReadableStreamInterface the caller must consume. Buffering
+     * it here instead would cap responses at Browser's 16 MiB limit and hold the whole
+     * transfer in memory — for a proxy, whose only job is to pass bytes along, both are
+     * pure cost.
+     *
+     * @param array<string, string>                $headers
+     * @param string|ReadableStreamInterface       $body    A stream is sent with the client's
+     *                                                      own Content-Length, or chunked
+     *                                                      when its length is unknown.
      *
      * @return PromiseInterface<\Psr\Http\Message\ResponseInterface>
      */
@@ -78,12 +88,12 @@ class SocksClient
         string $url,
         string $method,
         array $headers,
-        string $body = ''
+        string|ReadableStreamInterface $body = ''
     ): PromiseInterface {
         $this->validateUrl($url);
         $this->validateMethod($method);
 
-        return $this->browser->request(
+        return $this->browser->requestStreaming(
             $method,
             $url,
             $headers, // react/http standardizes headers array

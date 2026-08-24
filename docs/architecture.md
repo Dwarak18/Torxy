@@ -14,6 +14,7 @@ Torxy is built as a small PHP reverse proxy around three main concerns:
 - `Torxy\Core\ConnectDemux` splits CONNECT tunnels from ordinary proxy requests.
 - `Torxy\Core\ConnectRequest` parses and validates a CONNECT request head.
 - `Torxy\Core\ProxyServer` handles incoming requests and response creation.
+- `Torxy\Core\RequestBodyReader` decides whether a request body can be held for a retry.
 - `Torxy\Core\ConnectTunnel` establishes CONNECT tunnels through a circuit.
 - `Torxy\Security\AccessController` decides whether a client may use the proxy at all.
 - `Torxy\Security\HeaderSanitizer` strips identity-leaking and hop-by-hop headers.
@@ -50,9 +51,13 @@ normally.
 - Access is gated before any traffic is forwarded (see *Access control* below).
 - Identity headers such as `X-Forwarded-For`, `X-Real-IP`, and `Via` are removed before forwarding.
 - Hop-by-hop headers (`Proxy-Connection`, `Connection`, `Transfer-Encoding`, …) are removed
-  so the request does not advertise that a proxy is in the path.
+  so the request does not advertise that a proxy is in the path. Responses are filtered
+  through the same list on the way back.
 - `Proxy-Authorization` is read for the access check and then stripped, so the proxy's own
   credentials are never forwarded to the target.
+- `Expect` is stripped too. `React\Http\Io\StreamingServer` already answers the client's
+  `100-continue` itself, and react/http's *client* treats an upstream `100` as the final
+  response — so forwarding the header would relay an empty `100` in place of the real answer.
 - DNS resolution happens inside Tor, not on the local network.
 - In a CONNECT tunnel the proxy only copies bytes and never sees plaintext, so the client
   negotiates and validates TLS end-to-end against the real target. The proxy cannot read
@@ -109,6 +114,11 @@ Health is recorded where failures actually happen rather than inferred from prob
 - A transport failure marks a failure. `SocksClient` sets `withRejectErrorResponse(false)`,
   so a rejected promise is always a transport problem — a `404` or `503` from the target is
   relayed verbatim and is none of the circuit's business.
+- A response whose body fails part-way through still marks a failure, even though the head
+  already counted as a success and the client's response has already started.
+- Failures that are not the circuit's fault are excluded: a client abandoning its upload, and
+  a request body too large to buffer. Charging those to circuit health is how a size limit
+  used to take the whole pool offline.
 - After `health.failure_threshold` *consecutive* failures the circuit drops out of rotation.
   Any success resets the counter.
 
@@ -120,18 +130,63 @@ on them, and synthetic probes would add load and a fingerprintable periodic patt
 If every circuit is marked unhealthy, selection hands one back anyway. A stale health
 verdict must not take the whole proxy offline, and a real attempt is what re-tests the path.
 
+## Bodies
+
+Bodies are streamed in both directions, never buffered whole. A proxy's only job on the body
+is to pass bytes along, so holding them costs memory and imposes ceilings without buying
+anything. `StreamingRequestMiddleware` is enabled on the server and `SocksClient` uses
+`Browser::requestStreaming()`, so the upstream response resolves at its head and the body is
+handed to the client as it arrives. A 100 MiB transfer moves through in roughly the same
+resident memory as an empty one.
+
+Both defaults this replaces failed badly. react/http caps a buffered request body at 64 KiB
+(`HttpServer::MAXIMUM_BUFFER_SIZE`, independent of `post_max_size`) and forwards an *empty*
+body past that while still answering `200` — silent data loss. `Browser` caps a buffered
+response at 16 MiB and rejects beyond it, which surfaced as `502`.
+
+Streaming costs the ability to retry, because a consumed body cannot be replayed on another
+circuit. `RequestBodyReader` splits on that:
+
+- `Content-Length` known and ≤ 1 MiB — buffered in memory, so the request keeps its full
+  three attempts. This covers ordinary form posts and API calls.
+- Larger than that, or `Transfer-Encoding: chunked` with no length to check — streamed
+  through with a single attempt. Reading it to enable a retry is exactly what would put an
+  arbitrary upload into memory.
+
+A body that outgrows its limit is rejected with `413`, never truncated. Forwarding a short
+body under the client's own `Content-Length` is the failure mode being replaced.
+
+Response `Content-Length` survives sanitization deliberately: it is what lets react/http
+frame the relayed response with the upstream's own length instead of re-chunking it. When
+upstream used chunked encoding, `Transfer-Encoding` is stripped and react/http re-derives
+chunked framing itself.
+
+Concurrency is bounded explicitly by `LimitConcurrentRequestsMiddleware`. Passing
+`StreamingRequestMiddleware` disables the limit react/http would otherwise apply on its own,
+and each in-flight request holds a Tor connection open.
+
 ## Retries
 
-A client request may be tried on up to three circuits. On the forwarding path a retry is
-always safe. On the tunnel path `ConnectTunnel` resolves as soon as it has written
+A client request may be tried on up to three circuits, provided the body is replayable — see
+*Bodies* above. On the tunnel path `ConnectTunnel` resolves as soon as it has written
 `200 Connection Established` and rejects only while nothing has been written to the client,
 so a retry can never replay bytes the client has already started sending as TLS.
 
 Tunnel dials use a tighter 10s timeout than the 30s request timeout, so three attempts keep
 the worst case a client waits at the same 30s a single request allows.
 
+Not every failure is the circuit's. A request that fails because the *client* abandoned its
+upload is answered `400` without a health strike — otherwise repeated aborts would drain the
+pool, which is the same shape of self-inflicted outage the old 16 MiB response cap caused.
+
 ## Known limitations
 
+- The 30s request timeout bounds only the wait for the response *head*: `Browser` cancels its
+  timer once the head arrives, so a streamed body transfer is unbounded. This is deliberate,
+  since any fixed budget would kill a legitimate large download partway through — but a
+  stream that stalls mid-body hangs until the underlying connection dies. An idle timeout on
+  the body would close this.
+- A request body larger than 1 MiB, or of unknown length, gets one attempt instead of three.
 - With `round_robin` and a fixed circuit pool, the exit-IP sequence within one rotation
   period is deterministic — an observer sees the same N addresses repeat in a fixed cycle
   until the next `NEWNYM`.
