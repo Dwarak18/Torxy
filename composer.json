@@ -24,5 +24,21 @@
         "psr-4": {
             "Torxy\\Tests\\": "tests/"
         }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "stan": "phpstan analyse --configuration=phpstan.neon.dist",
+        "check": [
+            "@test",
+            "@stan"
+        ]
+    },
+    "scripts-descriptions": {
+        "test": "Run the unit test suite (tests/integration.sh is separate — it needs docker and Tor)",
+        "stan": "Run static analysis",
+        "check": "Run unit tests then static analysis"
+    },
+    "config": {
+        "sort-packages": true
     }
 }

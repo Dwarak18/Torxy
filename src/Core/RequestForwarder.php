@@ -13,7 +13,17 @@ class RequestForwarder
     private const REQUEST_TIMEOUT = 30.0;
 
     /**
+     * Tunnel dials get a tighter budget than requests because they are retried: at three
+     * attempts this keeps the worst case a client can wait at the same 30s a single
+     * request allows. The circuit is already built by this point, so a SOCKS dial that has
+     * not completed in 10s is far more likely dead than slow.
+     */
+    private const TUNNEL_TIMEOUT = 10.0;
+
+    /**
      * Forward an HTTP request through the given Tor circuit's SOCKS5 proxy.
+     *
+     * @param array<string, string> $headers
      *
      * @return PromiseInterface<\Psr\Http\Message\ResponseInterface>
      */
@@ -31,5 +41,21 @@ class RequestForwarder
         );
 
         return $client->forward($url, $method, $headers, $body);
+    }
+
+    /**
+     * Open a raw TCP tunnel to $host:$port through the given circuit, for CONNECT.
+     *
+     * @return PromiseInterface<\React\Socket\ConnectionInterface>
+     */
+    public function openTunnel(CircuitNode $circuit, string $host, int $port): PromiseInterface
+    {
+        $client = new SocksClient(
+            socksHost: $circuit->socksHost,
+            socksPort: $circuit->socksPort,
+            timeout:   self::TUNNEL_TIMEOUT
+        );
+
+        return $client->connectTcp($host, $port);
     }
 }

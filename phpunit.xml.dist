@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         failOnWarning="true"
+         failOnRisky="true"
+         cacheDirectory=".phpunit.cache"><!--
+             beStrictAboutOutputDuringTests is left off on purpose: the circuit classes log
+             their state changes to stdout by design, and asserting on that log in every
+             test would test the logging rather than the behaviour.
+         -->
+    <testsuites>
+        <!--
+            Unit tests only. tests/integration.sh drives the real proxy against live Tor
+            circuits and is run separately: it needs docker compose and the network.
+        -->
+        <testsuite name="unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+    </testsuites>
+
+    <source>
+        <include>
+            <directory>src</directory>
+        </include>
+    </source>
+</phpunit>
