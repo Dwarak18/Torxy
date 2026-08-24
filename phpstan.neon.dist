@@ -1,0 +1,11 @@
+parameters:
+    level: 6
+    paths:
+        - src
+        - tests
+        - bin
+        - config
+
+    # config/proxy.php reads $_ENV directly and bin/server.php is a script, not a class;
+    # both are intentionally untyped at the edges where env vars come in.
+    treatPhpDocTypesAsCertain: false

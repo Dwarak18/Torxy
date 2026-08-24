@@ -6,8 +6,11 @@
 /.env
 /.env.*.local
 .phpunit.result.cache
+/.phpunit.cache/
+
+# Local overrides of the committed *.dist tool configs
 phpunit.xml
-phpunit.xml.dist
+phpstan.neon
 
 # IDEs
 /.idea/
@@ -20,6 +23,7 @@ Thumbs.db
 
 # Logs, caches and temporary files
 *.log
+*.logs
 logs/
 cache/
 tmp/

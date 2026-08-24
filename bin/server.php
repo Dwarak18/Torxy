@@ -6,9 +6,13 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 use React\EventLoop\Loop;
 use Torxy\Tor\TorController;
+use Torxy\Tor\CircuitHealthMonitor;
 use Torxy\Tor\CircuitManager;
+use Torxy\Tor\CircuitRotator;
+use Torxy\Core\ConnectTunnel;
 use Torxy\Core\ProxyServer;
 use Torxy\Core\RequestForwarder;
+use Torxy\Security\AccessController;
 use Torxy\Security\HeaderSanitizer;
 
 $dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
@@ -18,7 +22,10 @@ $dotenv->required(['TOR_CONTROL_PASSWORD'])->notEmpty();
 $config = require __DIR__ . '/../config/proxy.php';
 
 $rotationStrategy = $config['tor']['rotation']['strategy'] ?? 'round_robin';
-$manager = new CircuitManager($rotationStrategy);
+$manager = new CircuitManager(
+    strategy:         $rotationStrategy,
+    failureThreshold: $config['tor']['health']['failure_threshold']
+);
 
 foreach ($config['tor']['circuits'] as $circuitConfig) {
     $host       = $circuitConfig['host'];
@@ -64,10 +71,18 @@ if ($manager->getCircuitCount() === 0) {
 
 echo sprintf("[Torxy] %d circuit(s) active\n", $manager->getCircuitCount());
 
+$forwarder = new RequestForwarder();
+
 $proxy = new ProxyServer(
     circuitManager:   $manager,
     headerSanitizer:  new HeaderSanitizer($config['security']['additional_stripped_headers']),
-    requestForwarder: new RequestForwarder(),
+    requestForwarder: $forwarder,
+    connectTunnel:    new ConnectTunnel($forwarder),
+    accessController: new AccessController(
+        username:   $config['security']['auth']['username'],
+        password:   $config['security']['auth']['password'],
+        allowedIps: $config['security']['allowed_ips']
+    ),
     host:             $config['server']['host'],
     port:             $config['server']['port']
 );
@@ -75,9 +90,22 @@ $proxy = new ProxyServer(
 $loop = Loop::get();
 $proxy->start($loop);
 
+$healthMonitor = new CircuitHealthMonitor(
+    circuitManager: $manager,
+    probeTarget:    $config['tor']['health']['probe_target']
+);
+$healthMonitor->start($loop, $config['tor']['health']['interval']);
+
+// Started even when the interval is 0: it also gives CircuitManager the non-blocking
+// rotation path that the `per_request` strategy needs.
+$rotator = new CircuitRotator(circuitManager: $manager, loop: $loop);
+$rotator->start($config['tor']['rotation']['interval']);
+
 if (defined('SIGINT')) {
-    $loop->addSignal(SIGINT, function () use ($manager, $loop): void {
+    $loop->addSignal(SIGINT, function () use ($manager, $healthMonitor, $rotator, $loop): void {
         echo "\n[Torxy] Shutting down..." . PHP_EOL;
+        $healthMonitor->stop($loop);
+        $rotator->stop();
         $manager->disconnectAll();
         $loop->stop();
     });

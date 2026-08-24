@@ -6,7 +6,9 @@ services:
     container_name: torxy_app
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # Bind host-side to loopback only. "8080:8080" would publish the proxy on every
+      # host interface, making it an open Tor relay for anyone on the network.
+      - "127.0.0.1:8080:8080"
     volumes:
       - .:/var/www/torxy
       - torxy_vendor:/var/www/torxy/vendor   # preserve vendor from container
