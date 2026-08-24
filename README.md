@@ -7,6 +7,7 @@ Torxy is a PHP 8.3 reverse proxy that forwards traffic through a pool of Tor cir
 - Rotates requests across multiple Tor circuits, with a time-based `NEWNYM` timer
 - Requires credentials and/or an IP allowlist, so the proxy is not an open relay
 - Tracks circuit health and retries a failed request on another circuit
+- Streams request and response bodies, so a large transfer does not sit in memory
 - Uses ReactPHP for the HTTP server
 - Forwards traffic through SOCKS5H so DNS resolves inside Tor
 - Tunnels HTTPS with `CONNECT`, so TLS stays end-to-end between client and target
@@ -72,6 +73,13 @@ curl --proxy-user user:pass -x http://localhost:8080 https://api.ipify.org
 ```bash
 curl http://localhost:8080/healthz
 ```
+
+Transfers of any size work in either direction and are not held in memory. One consequence
+is worth knowing: an upload larger than 1 MiB, or one sent with `Transfer-Encoding: chunked`,
+is streamed straight through and so gets a single attempt rather than being retried on
+another circuit — the body is already consumed by the time an attempt fails. Smaller uploads
+with a known length keep the full retry behaviour. Relatedly, the 30s timeout bounds the wait
+for the response head, not the body transfer, so a large download is never cut off partway.
 
 ## Development
 

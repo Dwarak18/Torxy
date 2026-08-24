@@ -47,6 +47,9 @@ final class HeaderSanitizerTest extends TestCase
             'trailer',
             'transfer-encoding',
             'upgrade',
+            // Answered by the proxy itself; forwarding it draws a 100 Continue from the
+            // target that would be relayed in place of the real response.
+            'expect',
         ];
 
         return array_combine($names, array_map(static fn(string $n): array => [$n], $names));
@@ -112,5 +115,62 @@ final class HeaderSanitizerTest extends TestCase
         ]);
 
         self::assertSame(['Host' => 'example.com', 'Accept' => '*/*'], $result);
+    }
+
+    /**
+     * Responses run through the same filter on the way back. Their bodies are streamed, and
+     * react/http computes the framing for the stream itself — so an upstream
+     * `Transfer-Encoding` left in place would contradict it.
+     */
+    public function testStripsHopByHopHeadersFromAnUpstreamResponse(): void
+    {
+        $result = (new HeaderSanitizer())->strip([
+            'Content-Type'      => 'application/octet-stream',
+            'Transfer-Encoding' => 'chunked',
+            'Connection'        => 'keep-alive',
+            'Keep-Alive'        => 'timeout=5',
+            'Trailer'           => 'Expires',
+            'Upgrade'           => 'h2c',
+            'Server'            => 'nginx',
+        ]);
+
+        self::assertSame(
+            ['Content-Type' => 'application/octet-stream', 'Server' => 'nginx'],
+            $result
+        );
+    }
+
+    /**
+     * `Content-Length` has to survive: it is what lets a streamed response keep the
+     * upstream's own framing instead of being re-chunked.
+     */
+    public function testKeepsResponseHeadersNeededToFrameAndDescribeTheBody(): void
+    {
+        $headers = [
+            'Content-Length'   => '104857600',
+            'Content-Type'     => 'video/mp4',
+            'Content-Encoding' => 'gzip',
+            'Accept-Ranges'    => 'bytes',
+            'ETag'             => '"abc123"',
+            'Last-Modified'    => 'Wed, 21 Oct 2015 07:28:00 GMT',
+            'Set-Cookie'       => 'session=abc',
+            'Location'         => 'https://example.com/moved',
+        ];
+
+        self::assertSame($headers, (new HeaderSanitizer())->strip($headers));
+    }
+
+    /**
+     * A `Proxy-Authenticate` challenge from the target would tell the client to send
+     * credentials that belong to some other proxy, not to Torxy's own gate.
+     */
+    public function testStripsProxyHeadersFromAnUpstreamResponse(): void
+    {
+        $result = (new HeaderSanitizer())->strip([
+            'WWW-Authenticate'   => 'Bearer realm="target"',
+            'Proxy-Authenticate' => 'Basic realm="upstream"',
+        ]);
+
+        self::assertSame(['WWW-Authenticate' => 'Bearer realm="target"'], $result);
     }
 }
